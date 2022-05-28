@@ -3,6 +3,9 @@ package server
 import (
 	"fmt"
 	"github.com/bwmarrin/discordgo"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 type ArrServer struct {
@@ -18,7 +21,7 @@ func (ac *ArrConfig) ConnectString() string {
 	return ac.CS
 }
 
-func NewServer(ac *ArrConfig) (*ArrServer, error) {
+func NewServer(ac DBConfig) (*ArrServer, error) {
 	var err error
 	db, err := NewDB(ac)
 	if err != nil {
@@ -42,8 +45,26 @@ func NewServer(ac *ArrConfig) (*ArrServer, error) {
 		return nil, err
 	}
 	as.Session = s
+	as.Session.Identify.Intents = discordgo.IntentsGuildMessages
 
 	return as, nil
+}
+
+func (srv *ArrServer) Run() error {
+	err := srv.Session.Open()
+	if err != nil {
+		//return fmt.Println("Error opening Discord session: ", err)
+		return err
+	}
+
+	// Wait here until CTRL-C or other term signal is received.
+	fmt.Println("arrmate is now running.  Press CTRL-C to exit.")
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
+	<-sc
+
+	// Cleanly close down the Discord session.
+	return srv.Session.Close()
 }
 
 func (srv *ArrServer) DiscordMessageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {

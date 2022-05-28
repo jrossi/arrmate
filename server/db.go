@@ -22,7 +22,7 @@ var Schema sqlitemigration.Schema
 func init() {
 	templates, _ := fs.Glob(migration_files, "migration/*.sql")
 	for _, a := range templates {
-		fmt.Println(a)
+		//fmt.Println(a)
 		s, err := migration_files.ReadFile(a)
 		if err != nil {
 			fmt.Println(err)
@@ -109,6 +109,33 @@ func (d *DB) ConnPrepareFunc() sqlitemigration.ConnPrepareFunc {
 		}
 		return nil
 	}
+}
+
+func (d *DB) RawConfigList(s *sqlite.Stmt, conn *sqlite.Conn) ([]string, error) {
+	results := []string{}
+	err := sqlitex.ExecuteTransient(conn, "select key FROM config", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			results = append(results, stmt.ColumnText(0))
+			return nil
+		},
+	})
+	return results, err
+
+}
+
+func (d *DB) ConfigList() ([]string, error) {
+
+	var err error
+	var s *sqlite.Stmt
+
+	// Get Conn
+	conn, err := d.Pool.Get(context.TODO())
+	if err != nil {
+		return nil, err
+	}
+	defer d.Pool.Put(conn)
+	return d.RawConfigList(s, conn)
+
 }
 
 func (d *DB) RawConfigGet(s *sqlite.Stmt, conn *sqlite.Conn, k string) (bool, string, error) {
