@@ -28,7 +28,9 @@ type grammer struct {
 	*/
 	CS       string `name:"connectstring" default:"./arrmate.sqlite"`
 	LogLevel string `name:"logging.level" default:"warn"`
-	Config   struct {
+	Server   struct {
+	} `cmd`
+	Config struct {
 		Get struct {
 			Values []string `arg:""`
 		} `cmd`

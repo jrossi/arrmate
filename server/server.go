@@ -46,6 +46,8 @@ func NewServer(ac DBConfig) (*ArrServer, error) {
 	}
 	as.Session = s
 	as.Session.Identify.Intents = discordgo.IntentsGuildMessages
+	as.Session.AddHandler(as.OnReady)
+	as.Session.AddHandler(as.DiscordMessageHandler)
 
 	return as, nil
 }
@@ -57,6 +59,16 @@ func (srv *ArrServer) Run() error {
 		return err
 	}
 
+	guilds, err := srv.Session.UserGuilds(100, "", "")
+	if len(guilds) == 0 {
+		fmt.Print("\t(none)")
+	}
+	for index := range guilds {
+		guild := guilds[index]
+		fmt.Print("\t", guild.Name, " (", guild.ID, ")")
+	}
+	//fmt.Print("channel name: ", activeChannel)
+
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("arrmate is now running.  Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
@@ -67,12 +79,18 @@ func (srv *ArrServer) Run() error {
 	return srv.Session.Close()
 }
 
+// OnReady handles the "ready" event from Discord
+func (srv *ArrServer) OnReady(s *discordgo.Session, e *discordgo.Ready) {
+	fmt.Println("Session ready")
+}
+
 func (srv *ArrServer) DiscordMessageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore all messages created by the bot itself
 	// This isn't required in this specific example but it's a good practice.
 	if m.Author.ID == s.State.User.ID {
 		return
 	}
+	//fmt.Println(m.Content)
 
 	// If the message is "ping" reply with "Pong!"
 	if m.Content == "ping" {
