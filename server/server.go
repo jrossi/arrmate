@@ -177,6 +177,7 @@ func (srv *ArrServer) SearchSonarr(ss string) ([]*sonarr.Series, error) {
 	s := sonarr.New(scfg)
 	//return s.Lookup(ss)
 	results, err := s.GetAllSeries()
+	return results, err
 
 }
 
