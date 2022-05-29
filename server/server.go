@@ -1,16 +1,24 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/bwmarrin/discordgo"
+	"github.com/jrudio/go-plex-client"
+	"github.com/rs/zerolog/log"
+	"golift.io/starr"
+	"golift.io/starr/sonarr"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
 type ArrServer struct {
-	Session *discordgo.Session
-	DB      *DB
+	Session  *discordgo.Session
+	PlexConn *plex.Plex
+	DB       *DB
 }
 
 type ArrConfig struct {
@@ -31,25 +39,91 @@ func NewServer(ac DBConfig) (*ArrServer, error) {
 	as := &ArrServer{
 		DB: db,
 	}
-
-	found, token, err := db.ConfigGet("discord.token")
+	err = as.SetupDiscord()
 	if err != nil {
 		return nil, err
 	}
+	err = as.SetupPlex()
+	if err != nil {
+		return nil, err
+	}
+
+	return as, nil
+}
+
+func NewClient(ac DBConfig) (*ArrServer, error) {
+	var err error
+	db, err := NewDB(ac)
+	if err != nil {
+		return nil, err
+	}
+
+	as := &ArrServer{
+		DB: db,
+	}
+	err = as.SetupPlex()
+	if err != nil {
+		return nil, err
+	}
+
+	return as, nil
+}
+
+func (srv *ArrServer) SetupPlex() error {
+
+	found, plexServer, err := srv.DB.ConfigGet("plex.url")
 	if !found {
-		return nil, fmt.Errorf("discord.token must be set before starting the arrmate server")
+		return fmt.Errorf("No config for plex.url")
+	} else if err != nil {
+		return err
+	}
+	found, plexToken, err := srv.DB.ConfigGet("plex.token")
+	if !found {
+		return fmt.Errorf("No config for plex.token")
+	} else if err != nil {
+		return err
+	}
+
+	plexConn, err := plex.New(plexServer, plexToken)
+	if err != nil {
+		return err
+	}
+	srv.PlexConn = plexConn
+
+	result, err := srv.PlexConn.Test()
+	if err != nil {
+		return err
+	}
+
+	if !result {
+		log.Warn().Str("src", "server.plex").Msg("plexConn.Test() did not return results")
+		return nil
+	}
+
+	log.Debug().Str("src", "server.plex").Msg("SetupPlex completed")
+	return nil
+}
+
+func (srv *ArrServer) SetupDiscord() error {
+	found, token, err := srv.DB.ConfigGet("discord.token")
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("discord.token must be set before starting the arrmate server")
 	}
 
 	s, err := discordgo.New("Bot " + token)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	as.Session = s
-	as.Session.Identify.Intents = discordgo.IntentsGuildMessages
-	as.Session.AddHandler(as.OnReady)
-	as.Session.AddHandler(as.DiscordMessageHandler)
+	srv.Session = s
+	srv.Session.Identify.Intents = discordgo.IntentsGuildMessages
+	srv.Session.AddHandler(srv.OnReady)
+	srv.Session.AddHandler(srv.DiscordMessageHandler)
 
-	return as, nil
+	return nil
+
 }
 
 func (srv *ArrServer) Run() error {
@@ -84,6 +158,28 @@ func (srv *ArrServer) OnReady(s *discordgo.Session, e *discordgo.Ready) {
 	fmt.Println("Session ready")
 }
 
+func (srv *ArrServer) SearchSonarr(ss string) ([]*sonarr.Series, error) {
+	found, url, err := srv.DB.ConfigGet("starr.sonarr.url")
+	if !found {
+		return nil, fmt.Errorf("No config for plex.url")
+	} else if err != nil {
+		return nil, err
+	}
+	found, token, err := srv.DB.ConfigGet("starr.sonarr.token")
+	if !found {
+		return nil, fmt.Errorf("No config for plex.token")
+	} else if err != nil {
+		return nil, err
+	}
+	scfg := starr.New(token, url, 1000000000)
+	scfg.Debugf = log.Debug().Msgf
+
+	s := sonarr.New(scfg)
+	//return s.Lookup(ss)
+	results, err := s.GetAllSeries()
+
+}
+
 func (srv *ArrServer) DiscordMessageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore all messages created by the bot itself
 	// This isn't required in this specific example but it's a good practice.
@@ -96,6 +192,13 @@ func (srv *ArrServer) DiscordMessageHandler(s *discordgo.Session, m *discordgo.M
 	if m.Content == "ping" {
 		srv.HandlePing(s, m)
 	}
+	if strings.HasPrefix(m.Content, "!plex search ") {
+		srv.HandlePlexSearch(s, m)
+	}
+	if strings.HasPrefix(m.Content, "!sonarr search ") {
+		srv.HandleSonarrSearch(s, m)
+	}
+
 	/*
 			if strings.HasPrefix(m.Content, "!sql ") {
 				srv.HandleSQL(s, m)
@@ -111,6 +214,59 @@ func (srv *ArrServer) DiscordMessageHandler(s *discordgo.Session, m *discordgo.M
 
 }
 
+func (srv *ArrServer) HandleSonarrSearch(s *discordgo.Session, m *discordgo.MessageCreate) {
+	ss := strings.TrimPrefix(m.Content, "!sonarr search ")
+	fmt.Print(ss)
+	results, err := srv.SearchSonarr(ss)
+	if err != nil {
+		log.Warn().Err(err).Str("search", ss).Err(err).Msg("Problem with user search")
+		return
+	}
+	if len(results) == 0 {
+		s.ChannelMessageSend(m.ChannelID, "Could not find results with Search: "+ss)
+		return
+	}
+
+	var b bytes.Buffer
+	for i, item := range results {
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(". ")
+		b.WriteString(item.Title)
+		b.WriteString(" monitored=")
+		b.WriteString(strconv.FormatBool(item.Monitored))
+		b.WriteString(" status=")
+		b.WriteString(item.Status)
+		b.WriteString("\n")
+		if i > 10 {
+			break
+		}
+	}
+	s.ChannelMessageSend(m.ChannelID, b.String())
+
+}
 func (srv *ArrServer) HandlePing(s *discordgo.Session, m *discordgo.MessageCreate) {
 	s.ChannelMessageSend(m.ChannelID, "Pong!")
+}
+func (srv *ArrServer) HandlePlexSearch(s *discordgo.Session, m *discordgo.MessageCreate) {
+	ss := strings.TrimPrefix(m.Content, "!plex search ")
+	//fmt.Println("--->" + ss + "<---")
+	//fmt.Println("--->" + srv.PlexConn.URL + "<---")
+	results, err := srv.PlexConn.Search(ss)
+	if err != nil {
+		log.Warn().Err(err).Str("search", ss).Err(err).Msg("Problem with user search")
+		return
+	}
+	if len(results.MediaContainer.Metadata) == 0 {
+		s.ChannelMessageSend(m.ChannelID, "Could not find results with Search: "+ss)
+		return
+	}
+
+	var b bytes.Buffer
+
+	for _, searchResult := range results.MediaContainer.Metadata {
+		b.WriteString(searchResult.Title)
+		b.WriteString("\n")
+	}
+	s.ChannelMessageSend(m.ChannelID, b.String())
+
 }
