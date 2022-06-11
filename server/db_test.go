@@ -148,7 +148,7 @@ func TestNewDB_Migrations(t *testing.T) {
 	// Check for all the expect tables that should be setup in the database.
 	t.Run("Expected_Tables", func(t *testing.T) {
 		// List of all the tables that are expect to be with in the database after migrations
-		expectedTables := []string{"config"}
+		expectedTables := []string{"config", "sonarr"}
 
 		for _, tName := range expectedTables {
 			s := conn.Prep(" SELECT * FROM sqlite_master where type='table' and name=$name")

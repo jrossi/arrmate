@@ -214,12 +214,12 @@ func HandleConfigShell(g *grammer) error {
 }
 
 func HandleStarrSonarrSearch(g *grammer) error {
-	ac, err := g.SetupClient()
+	_, err := g.SetupClient()
 	if err != nil {
 		return err
 	}
 	//defer db.Close()
-	ac.SearchSonarr(g.Sonarr.Search.Value)
+	//ac.SearchSonarr(g.Sonarr.Search.Value)
 	return nil
 
 }

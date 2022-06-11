@@ -4,21 +4,21 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/bwmarrin/discordgo"
+	"github.com/go-co-op/gocron"
 	"github.com/jrudio/go-plex-client"
 	"github.com/rs/zerolog/log"
-	"golift.io/starr"
-	"golift.io/starr/sonarr"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 type ArrServer struct {
 	Session  *discordgo.Session
 	PlexConn *plex.Plex
 	DB       *DB
+	Cron     *gocron.Scheduler
 }
 
 type ArrConfig struct {
@@ -31,19 +31,27 @@ func (ac *ArrConfig) ConnectString() string {
 
 func NewServer(ac DBConfig) (*ArrServer, error) {
 	var err error
+
 	db, err := NewDB(ac)
 	if err != nil {
 		return nil, err
 	}
 
 	as := &ArrServer{
-		DB: db,
+		DB:   db,
+		Cron: gocron.NewScheduler(time.UTC),
 	}
+	as.Cron.StartAsync()
+
 	err = as.SetupDiscord()
 	if err != nil {
 		return nil, err
 	}
 	err = as.SetupPlex()
+	if err != nil {
+		return nil, err
+	}
+	err = as.SetupStarr()
 	if err != nil {
 		return nil, err
 	}
@@ -158,29 +166,6 @@ func (srv *ArrServer) OnReady(s *discordgo.Session, e *discordgo.Ready) {
 	fmt.Println("Session ready")
 }
 
-func (srv *ArrServer) SearchSonarr(ss string) ([]*sonarr.Series, error) {
-	found, url, err := srv.DB.ConfigGet("starr.sonarr.url")
-	if !found {
-		return nil, fmt.Errorf("No config for plex.url")
-	} else if err != nil {
-		return nil, err
-	}
-	found, token, err := srv.DB.ConfigGet("starr.sonarr.token")
-	if !found {
-		return nil, fmt.Errorf("No config for plex.token")
-	} else if err != nil {
-		return nil, err
-	}
-	scfg := starr.New(token, url, 1000000000)
-	scfg.Debugf = log.Debug().Msgf
-
-	s := sonarr.New(scfg)
-	//return s.Lookup(ss)
-	results, err := s.GetAllSeries()
-	return results, err
-
-}
-
 func (srv *ArrServer) DiscordMessageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore all messages created by the bot itself
 	// This isn't required in this specific example but it's a good practice.
@@ -215,36 +200,6 @@ func (srv *ArrServer) DiscordMessageHandler(s *discordgo.Session, m *discordgo.M
 
 }
 
-func (srv *ArrServer) HandleSonarrSearch(s *discordgo.Session, m *discordgo.MessageCreate) {
-	ss := strings.TrimPrefix(m.Content, "!sonarr search ")
-	fmt.Print(ss)
-	results, err := srv.SearchSonarr(ss)
-	if err != nil {
-		log.Warn().Err(err).Str("search", ss).Err(err).Msg("Problem with user search")
-		return
-	}
-	if len(results) == 0 {
-		s.ChannelMessageSend(m.ChannelID, "Could not find results with Search: "+ss)
-		return
-	}
-
-	var b bytes.Buffer
-	for i, item := range results {
-		b.WriteString(strconv.Itoa(i))
-		b.WriteString(". ")
-		b.WriteString(item.Title)
-		b.WriteString(" monitored=")
-		b.WriteString(strconv.FormatBool(item.Monitored))
-		b.WriteString(" status=")
-		b.WriteString(item.Status)
-		b.WriteString("\n")
-		if i > 10 {
-			break
-		}
-	}
-	s.ChannelMessageSend(m.ChannelID, b.String())
-
-}
 func (srv *ArrServer) HandlePing(s *discordgo.Session, m *discordgo.MessageCreate) {
 	s.ChannelMessageSend(m.ChannelID, "Pong!")
 }

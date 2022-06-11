@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS config (
     key TEXT NOT NULL UNIQUE,
     value TEXT NOT NULL
 );
-CREATE INDEX config_index_key on config(key);
+CREATE INDEX IF NOT EXISTS config_index_key on config(key);
+
 
 -- CREATE TABLE IF NOT EXISTS events (
 --     id integer primary key autoincrement,
