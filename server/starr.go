@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/bwmarrin/discordgo"
 	"github.com/rs/zerolog/log"
 	"golift.io/starr"
+	"golift.io/starr/radarr"
 	"golift.io/starr/sonarr"
 	"strconv"
 	"strings"
@@ -15,10 +17,18 @@ import (
 )
 
 func (srv *ArrServer) SetupStarr() error {
-	job, err := srv.Cron.Every("5m").StartImmediately().Do(func() {
-		srv.BuildSonarr()
+	/*
+		job_sonarr, err := srv.Cron.Every("5m").StartImmediately().Do(func() {
+			srv.BuildSonarr()
+		})
+		job_sonarr.Tag("sonarr", "starr")
+	*/
+
+	job_radarr, err := srv.Cron.Every("5m").StartImmediately().Do(func() {
+		srv.BuildRadarr()
 	})
-	job.Tag("sonarr", "sonarr.starr")
+	job_radarr.Tag("radarr", "starr")
+
 	return err
 }
 
@@ -46,7 +56,7 @@ func (srv *ArrServer) BuildSonarr() error {
 	scfg.Debugf = log.Debug().Msgf
 
 	s := sonarr.New(scfg)
-	//return s.Lookup(ss)
+
 	results, err := s.GetAllSeries()
 	if err != nil {
 		return err
@@ -64,9 +74,10 @@ func (srv *ArrServer) BuildSonarr() error {
 		if err != nil {
 			return fmt.Errorf("database: %w", err)
 		}
-		q := `INSERT INTO sonarr (id, title, status, overview, previous_airing, network, added, genres, seasons, monitored) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+		q := `INSERT INTO sonarr (id, title, status, overview, previous_airing, network, added, genres, seasons, monitored, RAW) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
 		for i, s := range results {
 			log.Debug().Int("range item", i).Msg("populating database item")
+			raw, _ := json.Marshal(s)
 			err = sqlitex.Execute(conn, q, &sqlitex.ExecOptions{
 				Args: []interface{}{
 					s.ID,
@@ -79,6 +90,7 @@ func (srv *ArrServer) BuildSonarr() error {
 					strings.Join(s.Genres, ","),
 					len(s.Seasons),
 					FormatBool(s.Monitored),
+					raw,
 				},
 			})
 			if err != nil {
@@ -89,6 +101,132 @@ func (srv *ArrServer) BuildSonarr() error {
 		return nil
 	}
 	return doUpdate()
+}
+
+func (srv *ArrServer) BuildRadarr() error {
+
+	found, url, err := srv.DB.ConfigGet("starr.radarr.url")
+	if !found {
+		return fmt.Errorf("No config for plex.url")
+	} else if err != nil {
+		return err
+	}
+	found, token, err := srv.DB.ConfigGet("starr.radarr.token")
+	if !found {
+		return fmt.Errorf("No config for starr.radarr.token")
+	} else if err != nil {
+		return err
+	}
+
+	scfg := starr.New(token, url, 100000000)
+	scfg.Debugf = log.Debug().Msgf
+
+	s := radarr.New(scfg)
+	//return s.Lookup(ss)
+	results, err := s.GetMovie(0)
+	if err != nil {
+		return err
+	}
+
+	conn, err := srv.DB.Pool.Get(context.TODO())
+	if err != nil {
+		return err
+	}
+
+	doUpdate := func() (err error) {
+		defer sqlitex.Save(conn)(&err)
+
+		err = sqlitex.Execute(conn, "DELETE from radarr;", nil)
+		if err != nil {
+			return fmt.Errorf("database: %w", err)
+		}
+		q := `INSERT INTO radarr (id, title, status, overview, added, genres, is_available, monitored, RAW) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`
+		for i, s := range results {
+			log.Debug().Int("range item", i).Msg("populating database item")
+			raw, _ := json.Marshal(s)
+			err = sqlitex.Execute(conn, q, &sqlitex.ExecOptions{
+				Args: []interface{}{
+					s.ID,
+					s.Title,
+					s.Status,
+					s.Overview,
+					s.Added.Format("2006-01-02"),
+					strings.Join(s.Genres, ","),
+					FormatBool(s.IsAvailable),
+					FormatBool(s.Monitored),
+					raw,
+				},
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+	return doUpdate()
+}
+
+func (srv *ArrServer) HandleRadarrSearch(s *discordgo.Session, m *discordgo.MessageCreate) {
+	ss := strings.TrimPrefix(m.Content, "!radarr search ")
+	if !strings.HasPrefix(ss, "%") {
+		ss = fmt.Sprintf("%%%s", ss)
+	}
+	if !strings.HasSuffix(ss, "%") {
+		ss = fmt.Sprintf("%s%%", ss)
+	}
+	log.Debug().Str("radarr", "search").Str("query", ss).Msg("Radarr Query log")
+
+	conn, err := srv.DB.Pool.Get(context.TODO())
+	if err != nil {
+		log.Error().Err(err).Msg("Database could connected had a issue")
+		return
+	}
+
+	/*
+		q := "SELECT id, title, status,  added, is_available, monitored FROM radarr WHERE title LIKE ?"
+		outPutter := func(data string) error {
+			_, err := s.ChannelMessageSend(m.ChannelID, data)
+			if err != nil {
+				log.Error().Err(err).Msg("Sending message failed")
+				return err
+			}
+			return nil
+		}
+	*/
+
+	var b bytes.Buffer
+	err = sqlitex.Execute(conn, "SELECT id, title, status,  added, is_available, monitored FROM radarr WHERE title LIKE ?", &sqlitex.ExecOptions{
+		Args: []interface{}{ss},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			log.Debug().Int64("id", stmt.ColumnInt64(0)).Msg("ResultsFunc logging - entry found")
+			b.WriteString("id=")
+			b.WriteString(strconv.FormatInt(stmt.ColumnInt64(0), 10))
+			b.WriteString(" title=")
+			b.WriteString(stmt.ColumnText(1))
+			b.WriteString(" status=")
+			b.WriteString(stmt.ColumnText(2))
+			b.WriteString(" added=")
+			b.WriteString(stmt.ColumnText(3))
+			b.WriteString(" available=")
+			b.WriteString(stmt.ColumnText(4))
+			b.WriteString("\n")
+			if b.Len() >= 1500 {
+				_, err := s.ChannelMessageSend(m.ChannelID, b.String())
+				if err != nil {
+					log.Error().Err(err).Msg("Sending message failed")
+				}
+				b.Reset()
+			}
+			return nil
+
+		},
+	})
+	_, err = s.ChannelMessageSend(m.ChannelID, b.String())
+	if err != nil {
+		log.Error().Err(err).Msg("Sending message failed")
+	}
+
 }
 
 func (srv *ArrServer) HandleSonarrSearch(s *discordgo.Session, m *discordgo.MessageCreate) {

@@ -184,6 +184,9 @@ func (srv *ArrServer) DiscordMessageHandler(s *discordgo.Session, m *discordgo.M
 	if strings.HasPrefix(m.Content, "!sonarr search ") {
 		srv.HandleSonarrSearch(s, m)
 	}
+	if strings.HasPrefix(m.Content, "!radarr search ") {
+		srv.HandleRadarrSearch(s, m)
+	}
 
 	/*
 			if strings.HasPrefix(m.Content, "!sql ") {
